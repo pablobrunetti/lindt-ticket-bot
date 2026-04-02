@@ -33,9 +33,7 @@ CONFIG = {
     # Dates you want to monitor (format YYYY-MM-DD)
     # Leave empty [] to monitor the next `days_ahead` days
     "target_dates": [
-        "2026-03-20",
-        "2026-03-21",
-        "2026-03-22"
+        "2026-04-19"
     ],
 
     # How many days ahead to monitor (used when target_dates is empty)
