@@ -1,16 +1,16 @@
 """
-Lindt Home of Chocolate – Bot de Monitoramento de Vagas
-========================================================
-Verifica disponibilidade de horários no sistema de tickets (SecuTix)
-e envia notificação via Telegram e/ou e-mail quando encontrar vaga.
+Lindt Home of Chocolate – Availability Monitoring Bot
+======================================================
+Checks time slot availability on the ticketing system (SecuTix)
+and sends a notification via Telegram and/or e-mail when a slot opens up.
 
-Configuração rápida:
-  1. Edite a seção CONFIG abaixo
-  2. pip install requests python-telegram-bot
-  3. python lindt_bot.py
+Quick setup:
+  1. Edit the CONFIG section below
+  2. pip install requests python-dotenv
+  3. python bot_lindt.py
 
-Modo cron (checar a cada 5 min):
-  */5 * * * * /usr/bin/python3 /caminho/lindt_bot.py
+Cron mode (check every 5 min):
+  */5 * * * * /usr/bin/python3 /path/to/bot_lindt.py --once
 """
 
 import os
@@ -27,52 +27,52 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─────────────────────────────────────────────
-#  CONFIG – edite aqui
+#  CONFIG – edit here
 # ─────────────────────────────────────────────
 CONFIG = {
-    # Datas que você quer monitorar (formato YYYY-MM-DD)
-    # Deixe vazio [] para monitorar os próximos 60 dias
+    # Dates you want to monitor (format YYYY-MM-DD)
+    # Leave empty [] to monitor the next `days_ahead` days
     "target_dates": [
         "2026-03-20",
         "2026-03-21",
         "2026-03-22"
     ],
 
-    # Quantos dias à frente monitorar (usado se target_dates estiver vazio)
+    # How many days ahead to monitor (used when target_dates is empty)
     "days_ahead": 60,
 
-    # Intervalo entre checagens em segundos (padrão: 5 min)
+    # Interval between checks in seconds (default: 3 min)
     "check_interval_seconds": 180,
 
     # ── Telegram ──────────────────────────────
-    # Deixe em branco para desativar
-    # Como criar: fale com @BotFather no Telegram → /newbot
-    # Chat ID: fale com @userinfobot no Telegram
+    # Leave blank to disable
+    # How to create: talk to @BotFather on Telegram → /newbot
+    # Chat ID: talk to @userinfobot on Telegram
     "telegram_token": os.getenv("TELEGRAM_TOKEN", ""),
     "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
 
     # ── E-mail (Gmail) ────────────────────────
-    # Deixe em branco para desativar
-    # Para Gmail: ative "App Passwords" em myaccount.google.com/security
+    # Leave blank to disable
+    # For Gmail: enable "App Passwords" at myaccount.google.com/security
     "email_from": "",
-    "email_password": "",   # App Password (não a senha normal)
+    "email_password": "",   # App Password (not your regular password)
     "email_to": "",
 
-    # ── Arquivo de estado ─────────────────────
-    # Guarda quais datas já foram notificadas para não spammar
+    # ── State file ────────────────────────────
+    # Stores which slots have already been notified to avoid duplicates
     "state_file": "lindt_bot_state.json",
 }
 
 # ─────────────────────────────────────────────
-#  URLs SecuTix (Lindt)
+#  SecuTix URLs (Lindt)
 # ─────────────────────────────────────────────
 BASE_URL = "https://tickets.lindt-home-of-chocolate.com"
 PRODUCT_ID = "101502126146"
 
-# Endpoint AJAX real (descoberto via Network tab)
+# Real AJAX endpoint (discovered via the browser Network tab)
 AJAX_URL = f"{BASE_URL}/ajax/selection/timeslots"
 
-# Link de compra para incluir na notificação
+# Booking link to include in the notification
 BOOKING_URL = (
     f"{BASE_URL}/selection/timeslotpass"
     f"?productId={PRODUCT_ID}&lang=en"
@@ -98,7 +98,7 @@ log = logging.getLogger("lindt_bot")
 
 
 # ─────────────────────────────────────────────
-#  Estado persistente
+#  Persistent state
 # ─────────────────────────────────────────────
 def load_state() -> set:
     try:
@@ -114,7 +114,7 @@ def save_state(notified: set):
 
 
 # ─────────────────────────────────────────────
-#  Checagem de disponibilidade
+#  Availability check
 # ─────────────────────────────────────────────
 def get_target_dates() -> list[str]:
     if CONFIG["target_dates"]:
@@ -129,10 +129,10 @@ def get_target_dates() -> list[str]:
 
 def check_availability(target_date: str) -> list[dict]:
     """
-    Chama o endpoint AJAX real do SecuTix:
+    Calls the real SecuTix AJAX endpoint:
       GET /ajax/selection/timeslots?year=YYYY&month=M&day=D&productId=...
-    Retorna HTML parcial com os slots do dia.
-    Slots disponíveis têm link "Select"; slots lotados têm classe "soldOut" ou sem link.
+    Returns a partial HTML fragment with the time slots for the day.
+    Available slots have a "Select" link; sold-out slots have the "soldOut" class or no link.
     """
     import re
     slots = []
@@ -144,58 +144,58 @@ def check_availability(target_date: str) -> list[dict]:
         "day": d.day,
         "productId": PRODUCT_ID,
         "rateInsteadOfTimeslotsTable": "false",
-        "_": int(time.time() * 1000),  # cache-buster igual ao browser
+        "_": int(time.time() * 1000),  # cache-buster matching browser behaviour
     }
 
     try:
         r = requests.get(AJAX_URL, params=params, headers=HEADERS, timeout=15)
         if r.status_code != 200:
-            log.warning(f"AJAX retornou {r.status_code} para {target_date}")
+            log.warning(f"AJAX returned {r.status_code} for {target_date}")
             return slots
 
         html = r.text
 
-        # Cada slot é um <li> no HTML parcial retornado.
-        # Slot DISPONÍVEL: contém um <a> com "Select" (ou submissão de form)
-        # Slot LOTADO:     contém classe "soldOut" ou texto "Sold out" / sem link Select
+        # Each slot is a <li> element in the returned HTML fragment.
+        # AVAILABLE slot: contains an <a> with "Select" (or a form submit)
+        # SOLD OUT slot:  contains the "soldOut" class or "Sold out" text / no Select link
         #
-        # Extrai todos os blocos <li>...</li>
+        # Extract all <li>...</li> blocks
         li_blocks = re.findall(r'<li\b[^>]*>.*?</li>', html, re.DOTALL | re.IGNORECASE)
 
         for block in li_blocks:
-            # Pega o horário HH:MM
+            # Extract the HH:MM time
             time_match = re.search(r'\b(\d{2}:\d{2})\b', block)
             if not time_match:
                 continue
             slot_time = time_match.group(1)
 
-            # Descarta se está marcado como sold out
+            # Skip if marked as sold out
             if re.search(r'sold.?out|unavailable|complet', block, re.IGNORECASE):
-                log.debug(f"{target_date} {slot_time} → LOTADO")
+                log.debug(f"{target_date} {slot_time} → SOLD OUT")
                 continue
 
-            # Só conta se tem link/botão de selecção
+            # Only count if a Select link/button is present
             if not re.search(r'Select|submit', block, re.IGNORECASE):
-                log.debug(f"{target_date} {slot_time} → sem botão Select, ignorado")
+                log.debug(f"{target_date} {slot_time} → no Select button, skipped")
                 continue
 
             slots.append({"date": target_date, "time": slot_time, "remaining": None})
-            log.debug(f"{target_date} {slot_time} → DISPONÍVEL")
+            log.debug(f"{target_date} {slot_time} → AVAILABLE")
 
     except Exception as e:
-        log.warning(f"Erro ao checar {target_date}: {e}")
+        log.warning(f"Error checking {target_date}: {e}")
 
     return slots
 
 
 # ─────────────────────────────────────────────
-#  Notificações
+#  Notifications
 # ─────────────────────────────────────────────
 def send_telegram(message: str):
     token = CONFIG.get("telegram_token")
     chat_id = CONFIG.get("telegram_chat_id")
     if not token or not chat_id:
-        log.debug("Telegram não configurado: token/chat_id ausente")
+        log.debug("Telegram not configured: token/chat_id missing")
         return
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -205,11 +205,11 @@ def send_telegram(message: str):
             "parse_mode": "HTML",
         }, timeout=10)
         if r.status_code == 200:
-            log.info("Telegram: notificação enviada ✓")
+            log.info("Telegram: notification sent ✓")
         else:
-            log.warning(f"Telegram erro: {r.status_code} {r.text}")
+            log.warning(f"Telegram error: {r.status_code} {r.text}")
     except Exception as e:
-        log.error(f"Telegram falhou: {e}")
+        log.error(f"Telegram failed: {e}")
 
 
 def send_email(subject: str, body: str):
@@ -228,41 +228,41 @@ def send_email(subject: str, body: str):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender, password)
             server.sendmail(sender, recipient, msg.as_string())
-        log.info("Email: notificação enviada ✓")
+        log.info("Email: notification sent ✓")
     except Exception as e:
-        log.error(f"Email falhou: {e}")
+        log.error(f"Email failed: {e}")
 
 
 def notify(slots: list[dict]):
     lines = []
     for s in slots:
-        rem = f" ({s['remaining']} vagas)" if s.get("remaining") else ""
+        rem = f" ({s['remaining']} slots remaining)" if s.get("remaining") else ""
         lines.append(f"  📅 {s['date']}  🕐 {s['time']}{rem}")
 
     body = (
-        "🍫 <b>Lindt Home of Chocolate – Vagas Disponíveis!</b>\n\n"
+        "🍫 <b>Lindt Home of Chocolate – Slots Available!</b>\n\n"
         + "\n".join(lines)
-        + f"\n\n🔗 <a href='{BOOKING_URL}'>Comprar ingresso</a>"
+        + f"\n\n🔗 <a href='{BOOKING_URL}'>Book your ticket</a>"
     )
 
     send_telegram(body)
     send_email(
-        subject="🍫 Lindt – Vagas disponíveis!",
+        subject="🍫 Lindt – Slots available!",
         body=body.replace("<b>", "").replace("</b>", "")
-                  .replace("<a href='", "").replace("'>Comprar ingresso</a>", "")
+                  .replace("<a href='", "").replace("'>Book your ticket</a>", "")
     )
 
 
 # ─────────────────────────────────────────────
-#  Loop principal
+#  Main loop
 # ─────────────────────────────────────────────
 def run_once():
-    """Faz uma rodada de checagem e retorna os slots novos encontrados."""
+    """Runs a single check round and returns any newly found slots."""
     notified = load_state()
     new_slots = []
 
     dates = get_target_dates()
-    log.info(f"Checando {len(dates)} datas...")
+    log.info(f"Checking {len(dates)} dates...")
 
     for d in dates:
         slots = check_availability(d)
@@ -273,30 +273,30 @@ def run_once():
                 notified.add(key)
 
     if new_slots:
-        log.info(f"🎉 {len(new_slots)} slot(s) novo(s) encontrado(s)!")
+        log.info(f"🎉 {len(new_slots)} new slot(s) found!")
         log.info(new_slots)
         notify(new_slots)
         save_state(notified)
     else:
-        log.info("Nenhuma vaga nova encontrada.")
+        log.info("No new slots found.")
 
     return new_slots
 
 
 def run_loop():
-    """Fica em loop checando a cada check_interval_seconds."""
-    log.info("Bot iniciado. Pressione Ctrl+C para parar.")
+    """Loops indefinitely, checking every check_interval_seconds."""
+    log.info("Bot started. Press Ctrl+C to stop.")
     while True:
         try:
             run_once()
         except KeyboardInterrupt:
-            log.info("Bot encerrado.")
+            log.info("Bot stopped.")
             break
         except Exception as e:
-            log.error(f"Erro inesperado: {e}")
+            log.error(f"Unexpected error: {e}")
 
         interval = CONFIG["check_interval_seconds"]
-        log.info(f"Próxima checagem em {interval//60} min...")
+        log.info(f"Next check in {interval//60} min...")
         time.sleep(interval)
 
 
@@ -305,8 +305,8 @@ if __name__ == "__main__":
     import sys
 
     if "--once" in sys.argv:
-        # Modo cron: roda uma vez e sai
+        # Cron mode: run once and exit
         run_once()
     else:
-        # Modo daemon: loop infinito
+        # Daemon mode: infinite loop
         run_loop()
